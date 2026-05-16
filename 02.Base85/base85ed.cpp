@@ -1,117 +1,109 @@
-#include <vector>
-#include <cstdint>
-#include <string>
-#include <stdexcept>
-#include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <errno.h>
-
 #include "base85ed.h"
 
-// TODO: remove this
-static std::vector<uint8_t> run_command_io(const std::string &command,
-        const std::vector<uint8_t> &in)
-{
-    int inpipe[2];   // parent -> child
-    int outpipe[2];  // child -> parent
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <stdexcept>
+#include <vector>
 
-    if (pipe(inpipe) == -1) throw std::runtime_error(strerror(errno));
-    if (pipe(outpipe) == -1)
-    {
-        close(inpipe[0]);
-        close(inpipe[1]);
-        throw std::runtime_error(strerror(errno));
+namespace {
+
+constexpr char ALPHABET[] =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+
+constexpr std::size_t BASE = 85;
+constexpr std::size_t RAW_BLOCK_SIZE = 4;
+constexpr std::size_t ENCODED_BLOCK_SIZE = 5;
+constexpr std::uint64_t MAX_UINT32 = 0xFFFFFFFFULL;
+
+std::array<int, 256> make_decode_table() {
+    std::array<int, 256> table{};
+    table.fill(-1);
+
+    for (std::size_t i = 0; i < BASE; ++i) {
+        table[static_cast<unsigned char>(ALPHABET[i])] = static_cast<int>(i);
     }
 
-    pid_t pid = fork();
-    if (pid == -1)
-    {
-        close(inpipe[0]);
-        close(inpipe[1]);
-        close(outpipe[0]);
-        close(outpipe[1]);
-        throw std::runtime_error(strerror(errno));
-    }
-
-    if (pid == 0)
-    {
-        // child
-        dup2(inpipe[0], STDIN_FILENO);
-        dup2(outpipe[1], STDOUT_FILENO);
-        close(inpipe[0]);
-        close(inpipe[1]);
-        close(outpipe[0]);
-        close(outpipe[1]);
-        execl("/bin/sh", "sh", "-c", command.c_str(), (char*)nullptr);
-        _exit(127);
-    }
-
-    // parent
-    close(inpipe[0]);
-    close(outpipe[1]);
-
-    // write input
-    const uint8_t *wp = in.data();
-    ssize_t remaining = static_cast<ssize_t>(in.size());
-    while (remaining > 0)
-    {
-        ssize_t n = write(inpipe[1], wp, remaining);
-        if (n == -1)
-        {
-            if (errno == EINTR) continue;
-            close(inpipe[1]);
-            close(outpipe[0]);
-            waitpid(pid, nullptr, 0);
-            throw std::runtime_error(strerror(errno));
-        }
-        remaining -= n;
-        wp += n;
-    }
-    close(inpipe[1]); // signal EOF
-
-    // read all stdout
-    std::vector<uint8_t> out;
-    uint8_t buf[4096];
-    while (true)
-    {
-        ssize_t n = read(outpipe[0], buf, sizeof(buf));
-        if (n > 0) out.insert(out.end(), buf, buf + n);
-        else if (n == 0) break;
-        else
-        {
-            if (errno == EINTR) continue;
-            close(outpipe[0]);
-            waitpid(pid, nullptr, 0);
-            throw std::runtime_error(strerror(errno));
-        }
-    }
-    close(outpipe[0]);
-
-    int status = 0;
-    if (waitpid(pid, &status, 0) == -1) throw std::runtime_error(strerror(errno));
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-        throw std::runtime_error("child exited with non-zero status");
-
-    return out;
+    return table;
 }
 
-
-// TODO: implement this in C++
-std::vector<uint8_t> base85::encode(std::vector<uint8_t> const &bytes)
-{
-    return run_command_io(
-               "/usr/bin/env -S python3 -c 'import sys; import base64; sys.stdout.buffer.write(base64.b85encode(sys.stdin.buffer.read()))'",
-               bytes
-           );
+const std::array<int, 256>& decode_table() {
+    static const std::array<int, 256> table = make_decode_table();
+    return table;
 }
 
+void append_encoded_block(
+    std::vector<std::uint8_t>& out,
+    std::uint32_t value,
+    std::size_t chars_to_write
+) {
+    std::array<std::uint8_t, ENCODED_BLOCK_SIZE> encoded{};
 
-// TODO: implement this in C++
-std::vector<uint8_t> base85::decode(std::vector<uint8_t> const &b85str)
-{
-    return run_command_io(
-               "/usr/bin/env -S python3 -c 'import sys; import base64; sys.stdout.buffer.write(base64.b85decode(sys.stdin.buffer.read()))'",
-               b85str
-           );
+    for (std::size_t i = ENCODED_BLOCK_SIZE; i > 0; --i) {
+        encoded[i - 1] = static_cast<std::uint8_t>(ALPHABET[value % BASE]);
+        value /= BASE;
+    }
+
+    out.insert(out.end(), encoded.begin(), encoded.begin() + chars_to_write);
+}
+
+}
+
+std::vector<std::uint8_t> base85::encode(const std::vector<std::uint8_t>& bytes) {
+    std::vector<std::uint8_t> result;
+    result.reserve(
+        (bytes.size() + RAW_BLOCK_SIZE - 1) / RAW_BLOCK_SIZE * ENCODED_BLOCK_SIZE
+    );
+
+    for (std::size_t offset = 0; offset < bytes.size(); offset += RAW_BLOCK_SIZE) {
+        const std::size_t block_size =
+            std::min(RAW_BLOCK_SIZE, bytes.size() - offset);
+
+        std::uint32_t value = 0;
+
+        for (std::size_t i = 0; i < RAW_BLOCK_SIZE; ++i) {
+            value <<= 8;
+
+            if (i < block_size) {
+                value |= bytes[offset + i];
+            }
+        }
+
+        append_encoded_block(result, value, block_size + 1);
+    }
+    return result;
+}
+
+std::vector<std::uint8_t> base85::decode(const std::vector<std::uint8_t>& b85str) {
+    std::vector<std::uint8_t> result;
+    result.reserve(b85str.size() / ENCODED_BLOCK_SIZE * RAW_BLOCK_SIZE);
+    const auto& table = decode_table();
+    for (std::size_t offset = 0; offset < b85str.size(); offset += ENCODED_BLOCK_SIZE) {
+        const std::size_t block_size =
+            std::min(ENCODED_BLOCK_SIZE, b85str.size() - offset);
+        const std::size_t padding = ENCODED_BLOCK_SIZE - block_size;
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < ENCODED_BLOCK_SIZE; ++i) {
+            const std::uint8_t ch =
+                i < block_size ? b85str[offset + i] : static_cast<std::uint8_t>('~');
+            const int digit = table[ch];
+            if (digit < 0) {
+                throw std::invalid_argument("bad base85 character");
+            }
+            value = value * BASE + static_cast<std::uint64_t>(digit);
+        }
+        if (value > MAX_UINT32) {
+            throw std::invalid_argument("base85 overflow");
+        }
+        std::array<std::uint8_t, RAW_BLOCK_SIZE> decoded{
+            static_cast<std::uint8_t>((value >> 24) & 0xFF),
+            static_cast<std::uint8_t>((value >> 16) & 0xFF),
+            static_cast<std::uint8_t>((value >> 8) & 0xFF),
+            static_cast<std::uint8_t>(value & 0xFF),
+        };
+
+        result.insert(result.end(), decoded.begin(), decoded.end() - padding);
+    }
+
+    return result;
 }
