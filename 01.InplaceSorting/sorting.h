@@ -8,7 +8,7 @@
 template <typename Iterator>
 void bubble_sort(Iterator begin, Iterator end)
 {
-  for (Iterator last = end; last != begin; --last)
+    for (Iterator last = end; last != begin; --last)
     {
         bool swapped = false;
 
@@ -34,7 +34,7 @@ void bubble_sort(Iterator begin, Iterator end)
 template <typename Iterator>
 void quick_sort(Iterator begin, Iterator end)
 {
-  if (end - begin < 2)
+    if (end - begin < 2)
     {
         return;
     }

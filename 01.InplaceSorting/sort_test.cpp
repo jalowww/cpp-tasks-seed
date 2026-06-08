@@ -9,7 +9,8 @@ namespace
 template <typename Sort>
 void check_sort(Sort sort)
 {
-    std::vector<std::vector<int>> cases = {
+    std::vector<std::vector<int>> cases =
+    {
         {},
         {1},
         {2, 1},
