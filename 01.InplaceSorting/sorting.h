@@ -1,12 +1,10 @@
 #ifndef SORTING_H
 #define SORTING_H
 
-// Header-only
+#include <utility>
 
-// Для swap
 #include "collvalue.h"
 
-// ----------------------------- Пузырёк (например) --------------------------------------
 template <typename Iterator>
 void bubble_sort(Iterator begin, Iterator end)
 {
@@ -33,7 +31,6 @@ void bubble_sort(Iterator begin, Iterator end)
     }
 }
 
-// --------------------------- QuickSort (например) ---------------------------------------
 template <typename Iterator>
 void quick_sort(Iterator begin, Iterator end)
 {
@@ -69,4 +66,4 @@ void quick_sort(Iterator begin, Iterator end)
     quick_sort(greater_begin, end);
 }
 
-#endif // SORTING_H
+#endif
